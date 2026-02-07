@@ -93,6 +93,11 @@ if (hasFrontendBuild) {
   });
 }
 
+// Root route (always available)
+app.get("/", (req, res) => {
+  res.status(200).send("NBSC Backend API is running ✅");
+});
+
 // 404 + error handler LAST
 app.use(notFound);
 app.use(errorHandler);
