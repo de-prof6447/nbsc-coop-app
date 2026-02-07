@@ -7,14 +7,32 @@ import { requireAuth } from "../middleware/auth.js";
 
 const COOKIE_NAME = process.env.COOKIE_NAME || "nbsc_token";
 
+/**
+ * Cookie options for cross-site (frontend + backend on different domains).
+ * Production on Render MUST be:
+ * - sameSite: "none"
+ * - secure: true
+ */
 function cookieOptions() {
   const isProd = process.env.NODE_ENV === "production";
+
+  // Allow overriding if you ever need it (optional)
+  const sameSite = (process.env.COOKIE_SAMESITE || (isProd ? "none" : "lax")).toLowerCase();
+
+  // Secure MUST be true when SameSite=None (browser requirement)
+  const secure =
+    sameSite === "none"
+      ? true
+      : (process.env.COOKIE_SECURE ? String(process.env.COOKIE_SECURE) === "true" : isProd);
+
   return {
     httpOnly: true,
-    sameSite: "lax",
-    secure: isProd ? true : (String(process.env.COOKIE_SECURE) === "true"),
+    secure,
+    sameSite, // "none" in production for cross-domain
     path: "/",
     maxAge: 7 * 24 * 60 * 60 * 1000
+    // Do NOT set domain unless you know exactly what you're doing.
+    // Leaving it unset makes it host-only for nbsc-backend.onrender.com, which is correct.
   };
 }
 
@@ -27,23 +45,44 @@ authRouter.post("/login", async (req, res, next) => {
 
     const db = getDb();
     try {
-      const user = await get(db, "SELECT sap_no, full_name, phone_no, password_hash, role, force_password_change FROM members WHERE sap_no = ?", [value.sap_no]);
+      const user = await get(
+        db,
+        "SELECT sap_no, full_name, phone_no, password_hash, role, force_password_change FROM members WHERE sap_no = ?",
+        [value.sap_no]
+      );
       if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
       const ok = await bcrypt.compare(value.password, user.password_hash);
       if (!ok) return res.status(401).json({ error: "Invalid credentials" });
 
-      const token = jwt.sign({ sap_no: user.sap_no, role: user.role }, process.env.JWT_SECRET, { expiresIn: "7d" });
+      const token = jwt.sign(
+        { sap_no: user.sap_no, role: user.role },
+        process.env.JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+
+      // Set cookie
       res.cookie(COOKIE_NAME, token, cookieOptions());
-      res.json({ sap_no: user.sap_no, full_name: user.full_name, role: user.role, force_password_change: !!user.force_password_change });
+
+      // Return user (do not return token)
+      return res.json({
+        sap_no: user.sap_no,
+        full_name: user.full_name,
+        role: user.role,
+        force_password_change: !!user.force_password_change
+      });
     } finally {
       db.close();
     }
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
 authRouter.post("/logout", (req, res) => {
-  res.clearCookie(COOKIE_NAME, { path: "/" });
+  // Clear must use SAME options (especially sameSite/secure/path), otherwise cookie may not clear.
+  const opts = cookieOptions();
+  res.clearCookie(COOKIE_NAME, { path: opts.path, sameSite: opts.sameSite, secure: opts.secure });
   res.json({ ok: true });
 });
 
@@ -51,12 +90,18 @@ authRouter.get("/me", requireAuth, async (req, res, next) => {
   try {
     const db = getDb();
     try {
-      const user = await get(db, "SELECT sap_no, full_name, phone_no, role, force_password_change FROM members WHERE sap_no = ?", [req.user.sap_no]);
+      const user = await get(
+        db,
+        "SELECT sap_no, full_name, phone_no, role, force_password_change FROM members WHERE sap_no = ?",
+        [req.user.sap_no]
+      );
       res.json({ user: user ? { ...user, force_password_change: !!user.force_password_change } : null });
     } finally {
       db.close();
     }
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
 authRouter.post("/change-password", requireAuth, async (req, res, next) => {
@@ -73,10 +118,17 @@ authRouter.post("/change-password", requireAuth, async (req, res, next) => {
       if (!ok) return res.status(400).json({ error: "Current password is incorrect" });
 
       const password_hash = await bcrypt.hash(value.new_password, 12);
-      await run(db, "UPDATE members SET password_hash=?, force_password_change=0, updated_at=datetime('now') WHERE sap_no=?", [password_hash, req.user.sap_no]);
+      await run(
+        db,
+        "UPDATE members SET password_hash=?, force_password_change=0, updated_at=datetime('now') WHERE sap_no=?",
+        [password_hash, req.user.sap_no]
+      );
+
       res.json({ ok: true });
     } finally {
       db.close();
     }
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
