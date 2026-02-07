@@ -1,120 +1,86 @@
-const rawBase = import.meta.env.VITE_API_BASE || "/api";
-const API_BASE = rawBase.replace(/\/+$/, ""); // remove trailing slash
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import morgan from "morgan";
+import cookieParser from "cookie-parser";
+import rateLimit from "express-rate-limit";
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
 
-async function request(path, opts = {}) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...opts,
-    headers: {
-      Accept: "application/json",
-      ...(opts.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-      ...(opts.headers || {}),
-    },
-    credentials: "include",
-  });
+import { apiRouter } from "./routes/index.js";
+import { errorHandler, notFound } from "./middleware/errors.js";
 
-  const contentType = res.headers.get("content-type") || "";
+dotenv.config();
 
-  if (!res.ok) {
-    let msg = `Request failed (${res.status})`;
-    try {
-      const data = contentType.includes("application/json")
-        ? await res.json()
-        : { error: await res.text() };
-      msg = data?.error || msg;
-    } catch {}
-    throw new Error(msg);
-  }
-
-  if (contentType.includes("application/json")) return res.json();
-  return res;
+if (!process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET is missing. Create backend/.env and set JWT_SECRET.");
 }
 
-function uploadWithProgress(path, file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE}${path}`);
-    xhr.withCredentials = true;
+const app = express();
+app.set("trust proxy", 1); // important on Render (proxy)
 
-    xhr.upload.onprogress = (e) => {
-      if (!onProgress || !e.lengthComputable) return;
-      onProgress(Math.round((e.loaded / e.total) * 100));
-    };
+const PORT = process.env.PORT || 4000;
 
-    xhr.onload = () => {
-      try {
-        const ct = xhr.getResponseHeader("content-type") || "";
-        const isJson = ct.includes("application/json");
-        const data = isJson ? JSON.parse(xhr.responseText || "{}") : xhr.responseText;
+/**
+ * CORS
+ * - Allow multiple origins using comma-separated env var:
+ *   CORS_ORIGIN="https://nbsc-coop-app.onrender.com,http://localhost:5173"
+ */
+const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
 
-        if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
-        return reject(new Error((data && data.error) || `Upload failed (${xhr.status})`));
-      } catch {
-        return reject(new Error("Upload failed"));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error("Network error (Failed to fetch)"));
-
-    const fd = new FormData();
-    fd.append("file", file);
-    xhr.send(fd);
-  });
-}
-
-export const api = {
-  login: (sap_no, password) =>
-    request("/auth/login", { method: "POST", body: JSON.stringify({ sap_no, password }) }),
-
-  logout: () => request("/auth/logout", { method: "POST", body: JSON.stringify({}) }),
-
-  me: () => request("/auth/me"),
-
-  changePassword: (current_password, new_password) =>
-    request("/auth/change-password", {
-      method: "POST",
-      body: JSON.stringify({ current_password, new_password }),
-    }),
-
-  dashboard: (sap_no) => {
-    const q = sap_no ? `?sap_no=${encodeURIComponent(sap_no)}` : "";
-    return request(`/records/dashboard${q}`);
+const corsOptions = {
+  origin: (origin, cb) => {
+    // allow non-browser tools (no Origin header)
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error(`CORS blocked for origin: ${origin}`));
   },
-
-  listMembers: (q) => request(`/members${q ? `?q=${encodeURIComponent(q)}` : ""}`),
-  createMember: (payload) => request("/members", { method: "POST", body: JSON.stringify(payload) }),
-  updateMember: (sap_no, payload) =>
-    request(`/members/${encodeURIComponent(sap_no)}`, { method: "PUT", body: JSON.stringify(payload) }),
-  resetMemberPassword: (sap_no, new_password) =>
-    request(`/members/${encodeURIComponent(sap_no)}/reset-password`, {
-      method: "POST",
-      body: JSON.stringify({ new_password }),
-    }),
-  deleteMember: (sap_no) => request(`/members/${encodeURIComponent(sap_no)}`, { method: "DELETE" }),
-  bulkDelete: (sap_nos) => request("/members/bulk-delete", { method: "POST", body: JSON.stringify({ sap_nos }) }),
-
-  createRecord: (payload) => request("/records", { method: "POST", body: JSON.stringify(payload) }),
-  deleteRecord: (record_id) => request(`/records/${record_id}`, { method: "DELETE" }),
-
-  adminStats: () => request("/admin/stats"),
-
-  adminListRecords: ({ q = "", date = "", limit = 100 } = {}) => {
-    const qs = new URLSearchParams();
-    if (q) qs.set("q", q);
-    if (date) qs.set("date", date);
-    if (limit) qs.set("limit", String(limit));
-    const s = qs.toString();
-    return request(`/admin/records${s ? `?${s}` : ""}`);
-  },
-
-  adminBulkDeleteRecords: (record_ids) =>
-    request("/admin/records/bulk-delete", { method: "POST", body: JSON.stringify({ record_ids }) }),
-
-  importMembers: (file, onProgress) => uploadWithProgress("/admin/import/members", file, onProgress),
-  importRecords: (file, onProgress) => uploadWithProgress("/admin/import/records", file, onProgress),
-
-  clearDatabase: () =>
-    request("/admin/danger/clear-database", { method: "POST", body: JSON.stringify({ confirm: "CLEAR" }) }),
-
-  deleteMembers: () =>
-    request("/admin/danger/delete-members", { method: "POST", body: JSON.stringify({ confirm: "DELETE_ALL_MEMBERS" }) }),
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204,
 };
+
+app.use(helmet());
+app.use(morgan("dev"));
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+
+// ✅ Must be BEFORE routes
+app.use(cors(corsOptions));
+// ✅ Explicitly handle preflight for all routes
+app.options("*", cors(corsOptions));
+
+app.use(
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 300,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+  })
+);
+
+// Health check
+app.get("/health", (req, res) => res.json({ ok: true }));
+app.get("/api/health", (req, res) => res.json({ status: "OK", service: "NBSC Backend", time: new Date() }));
+
+// API routes
+app.use("/api", apiRouter);
+
+// Root (for quick check)
+app.get("/", (req, res) => {
+  res.send("NBSC Backend API is working 🚀");
+});
+
+// Errors LAST
+app.use(notFound);
+app.use(errorHandler);
+
+app.listen(PORT, () => {
+  console.log(`NBSC Kaduna API listening on http://localhost:${PORT}`);
+});
