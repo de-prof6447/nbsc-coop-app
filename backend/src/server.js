@@ -46,8 +46,11 @@ app.use(
   })
 );
 
-// Health check
+// ✅ Health checks (put BEFORE notFound/errorHandler)
 app.get("/health", (req, res) => res.json({ ok: true }));
+app.get("/api/health", (req, res) =>
+  res.json({ status: "OK", service: "NBSC Backend", time: new Date().toISOString() })
+);
 
 /**
  * Serve React build (frontend/dist)
@@ -76,6 +79,7 @@ app.get(/^\/(?!api\/).*/, (req, res, next) => {
   });
 });
 
+// ✅ keep these LAST
 app.use(notFound);
 app.use(errorHandler);
 
