@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
 import { apiRouter } from "./routes/index.js";
@@ -20,23 +21,34 @@ if (!process.env.JWT_SECRET) {
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// If you serve frontend from the same backend (recommended), you don't need CORS in production.
-// Keep it enabled for dev only (when frontend runs on :5173).
-const corsOrigin = process.env.CORS_ORIGIN || "http://localhost:5173";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
+// Frontend locations (monorepo: /frontend)
+const frontendDist = path.join(__dirname, "../../frontend/dist");
+const indexHtml = path.join(frontendDist, "index.html");
+const templatesDir = path.join(__dirname, "../../frontend/public/templates");
+const hasFrontendBuild = fs.existsSync(indexHtml);
+
+// Middleware
 app.use(helmet());
 app.use(morgan("dev"));
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-app.use(
-  cors({
-    origin: corsOrigin,
-    credentials: true,
-  })
-);
+// CORS (safe defaults)
+const corsOrigin = process.env.CORS_ORIGIN || "http://localhost:5173";
+if (process.env.NODE_ENV !== "production") {
+  app.use(
+    cors({
+      origin: corsOrigin,
+      credentials: true,
+    })
+  );
+}
 
+// Rate limit
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -46,40 +58,42 @@ app.use(
   })
 );
 
-// ✅ Health checks (put BEFORE notFound/errorHandler)
+// Health endpoints
 app.get("/health", (req, res) => res.json({ ok: true }));
 app.get("/api/health", (req, res) =>
-  res.json({ status: "OK", service: "NBSC Backend", time: new Date().toISOString() })
+  res.json({
+    status: "OK",
+    service: "NBSC Backend",
+    time: new Date().toISOString(),
+  })
 );
 
-/**
- * Serve React build (frontend/dist)
- * IMPORTANT:
- * - This must be BEFORE notFound/errorHandler
- * - Do NOT define app.get("/") JSON route, or it will block the frontend
- */
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const frontendDist = path.join(__dirname, "../../frontend/dist");
-const templatesDir = path.join(__dirname, "../../frontend/public/templates");
-
-// Only serve static if the build exists (helps in dev)
-app.use(express.static(frontendDist));
-// Serve downloadable import templates even if you haven't rebuilt the frontend.
-app.use("/templates", express.static(templatesDir));
+// Serve templates always (even if frontend not built)
+if (fs.existsSync(templatesDir)) {
+  app.use("/templates", express.static(templatesDir));
+}
 
 // API routes
 app.use("/api", apiRouter);
 
-// If frontend build exists, serve SPA for all non-API routes (/, /login, /change-password, etc.)
-app.get(/^\/(?!api\/).*/, (req, res, next) => {
-  const indexPath = path.join(frontendDist, "index.html");
-  res.sendFile(indexPath, (err) => {
-    if (err) return next(); // if build not present, fall through to notFound
-  });
-});
+// Serve frontend if built; otherwise give a simple root message
+if (hasFrontendBuild) {
+  app.use(express.static(frontendDist));
 
-// ✅ keep these LAST
+  // SPA fallback (ONLY when build exists)
+  app.get(/^\/(?!api\/|templates\/).*/, (req, res) => {
+    res.sendFile(indexHtml);
+  });
+} else {
+  // No frontend build on server yet
+  app.get("/", (req, res) => {
+    res
+      .status(200)
+      .send("NBSC Backend API is working 🚀 (frontend build not found on this server)");
+  });
+}
+
+// 404 + error handler LAST
 app.use(notFound);
 app.use(errorHandler);
 
