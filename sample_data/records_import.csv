@@ -1,0 +1,5 @@
+sap_no,date,description,amount,remark
+100003,1/5/2026,THRIFT,10000,Monthly thrift
+100003,2/5/2026,THRIFT,10000,Monthly thrift
+100003,2/10/2026,LOAN_DISBURSEMENT,150000,Loan approved
+100003,3/10/2026,LOAN_REPAYMENT,25000,Repayment

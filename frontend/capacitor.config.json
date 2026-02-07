@@ -1,0 +1,6 @@
+{
+  "appId": "com.nbstaffcooperative.portal",
+  "appName": "NBSC Portal",
+  "webDir": "dist",
+  "bundledWebRuntime": false
+}

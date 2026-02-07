@@ -1,0 +1,5 @@
+sap_no,date,description,amount,remark
+100001,2026-01-01,THRIFT,10000,January contribution
+100001,2026-01-15,LOAN,50000,Emergency loan
+100001,2026-02-01,REPAYMENT,5000,Part payment
+100002,2026-01-01,THRIFT,8000,

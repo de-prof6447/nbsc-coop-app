@@ -1,0 +1,4 @@
+sap_no,full_name,phone_no,role,password
+100001,Amina Yusuf,08012345678,MEMBER,12345678
+100002,Chinedu Okafor,08023456789,MEMBER,12345678
+ADMIN002,System Supervisor,08034567890,ADMIN,admin1234
