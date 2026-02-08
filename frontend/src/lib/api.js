@@ -70,6 +70,13 @@ function uploadWithProgress(path, file, onProgress) {
     xhr.send(fd);
   });
 }
+export function openPdf(path) {
+  const base = import.meta.env.VITE_API_BASE;
+  const url = `${base}${path}`;
+
+  // Important: use browser navigation so cookies are sent
+  window.open(url, "_blank", "noopener,noreferrer");
+}
 
 export const api = {
   login: (sap_no, password) =>
