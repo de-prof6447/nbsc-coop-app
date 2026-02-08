@@ -23,9 +23,6 @@ export default function Shell({ user, onLogout }) {
   >
     Official Website
   </a>
-
-  <button>Change Password</button>
-  <button>Logout</button>
 </div>
 
           <div className="ml-auto flex items-center gap-2">
