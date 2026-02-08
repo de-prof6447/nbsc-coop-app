@@ -1,228 +1,251 @@
-// backend/src/routes/statement.js
 import { Router } from "express";
 import PDFDocument from "pdfkit";
 import { getDb, all, get } from "../db/sqlite.js";
 import { requireAuth } from "../middleware/auth.js";
 
-export const statementRouter = Router();
+export const statementsRouter = Router();
 
-// Helpers
+/**
+ * Sentence case:
+ * - lowercases everything
+ * - capitalizes the first letter of each sentence
+ */
 function toSentenceCase(input = "") {
-  const s = String(input).trim().replace(/\s+/g, " ");
+  const s = String(input).trim();
   if (!s) return "";
   const lower = s.toLowerCase();
-  return lower.charAt(0).toUpperCase() + lower.slice(1);
+  // Split keeping punctuation blocks
+  const parts = lower.split(/([.!?]\s+)/);
+  let out = "";
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (!part) continue;
+    if (/^[.!?]\s+$/.test(part)) {
+      out += part;
+    } else {
+      out += part.charAt(0).toUpperCase() + part.slice(1);
+    }
+  }
+  return out;
 }
 
-function money(n) {
-  const num = Number(n || 0);
-  return num.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function naira(n) {
+  const v = Number(n || 0);
+  return `₦${v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function safeText(v) {
-  return (v === null || v === undefined) ? "" : String(v);
+  return v == null ? "" : String(v);
 }
 
-statementRouter.get("/pdf", requireAuth, async (req, res, next) => {
-  let db;
+/**
+ * Draw a table header row
+ */
+function drawTableHeader(doc, x, y, cols, rowH) {
+  doc.font("Helvetica-Bold").fontSize(9);
+  doc.rect(x, y, cols.totalW, rowH).stroke();
+  let cx = x;
+  for (const c of cols.list) {
+    doc.text(c.label, cx + 4, y + 6, { width: c.w - 8, align: c.align || "left" });
+    doc.rect(cx, y, c.w, rowH).stroke();
+    cx += c.w;
+  }
+  doc.font("Helvetica").fontSize(9);
+}
+
+/**
+ * Ensure there's space for the next row; if not, add page and redraw header
+ */
+function ensureSpace(doc, y, neededH, topY, cols, headerH) {
+  const bottom = doc.page.height - doc.page.margins.bottom;
+  if (y + neededH <= bottom) return y;
+
+  doc.addPage();
+  y = topY;
+  drawTableHeader(doc, doc.page.margins.left, y, cols, headerH);
+  return y + headerH;
+}
+
+statementsRouter.get("/pdf", requireAuth, async (req, res, next) => {
+  const db = getDb();
   try {
-    const sapNo = req.user.sap_no;
+    const sap_no = req.user.sap_no;
 
-    db = getDb();
-
-    // Pull member header info
+    // 1) Load member + records (single pass)
     const member = await get(
       db,
-      "SELECT full_name, sap_no, phone_no FROM members WHERE sap_no=?",
-      [sapNo]
+      "SELECT sap_no, full_name, phone_no FROM members WHERE sap_no = ?",
+      [sap_no]
     );
 
-    // Pull records (ORDER BY description so grouping is easy)
+    // Sort by Description (case-insensitive), then Date
     const rows = await all(
       db,
-      `SELECT date, description, amount, remark
-       FROM records
-       WHERE sap_no=?
-       ORDER BY description COLLATE NOCASE ASC, date ASC, rowid ASC`,
-      [sapNo]
+      `
+      SELECT date, description, amount, remark
+      FROM records
+      WHERE sap_no = ?
+      ORDER BY description COLLATE NOCASE ASC, date ASC
+      `,
+      [sap_no]
     );
 
-    // Response headers
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="NBSC-Statement-${sapNo}.pdf"`);
+    // 2) Group by description + compute totals
+    const groups = [];
+    const map = new Map();
+    for (const r of rows) {
+      const key = safeText(r.description).trim();
+      if (!map.has(key)) {
+        const g = { description: key, total: 0, items: [] };
+        map.set(key, g);
+        groups.push(g);
+      }
+      const g = map.get(key);
+      const amt = Number(r.amount || 0);
+      g.total += amt;
+      g.items.push({
+        date: safeText(r.date),
+        description: safeText(r.description),
+        amount: amt,
+        remark: toSentenceCase(safeText(r.remark)),
+      });
+    }
 
-    // Create PDF
+    // 3) Stream PDF (fast)
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="statement_${sap_no}.pdf"`);
+
     const doc = new PDFDocument({
       size: "A4",
-      margins: { top: 36, left: 36, right: 36, bottom: 36 },
-      bufferPages: false
+      margin: 36,
+      info: { Title: `NBSC Statement - ${sap_no}` },
     });
 
     doc.pipe(res);
 
-    // Layout constants
-    const pageWidth = doc.page.width;
-    const left = doc.page.margins.left;
-    const right = pageWidth - doc.page.margins.right;
-    const top = doc.page.margins.top;
-    const bottom = doc.page.height - doc.page.margins.bottom;
-
-    const colDateW = 70;
-    const colDescW = 170;
-    const colAmtW = 90;
-    const colRemarkW = (right - left) - (colDateW + colDescW + colAmtW);
-
-    const xDate = left;
-    const xDesc = xDate + colDateW;
-    const xAmt = xDesc + colDescW;
-    const xRemark = xAmt + colAmtW;
-
-    const lineGap = 2;
-
-    function ensureSpace(heightNeeded) {
-      // Only add a page when we truly don't fit
-      if (doc.y + heightNeeded <= bottom) return;
-      doc.addPage();
-      drawHeader(false);
-      drawTableHeader();
-    }
-
-    function drawHeader(showMember = true) {
-      doc.fontSize(14).font("Helvetica-Bold").text("NIGERIAN BREWERIES STAFF COOPERATIVE – KADUNA", left, top, {
-        width: right - left,
-        align: "center"
-      });
-
-      doc.moveDown(0.2);
-      doc.fontSize(11).font("Helvetica-Bold").text("Member Statement", {
-        width: right - left,
-        align: "center"
-      });
-
-      doc.moveDown(0.8);
-
-      if (showMember) {
-        doc.fontSize(9).font("Helvetica");
-        doc.text(`Name: ${safeText(member?.full_name)}`, left);
-        doc.text(`SAP No: ${safeText(member?.sap_no || sapNo)}`, left);
-        doc.text(`Phone: ${safeText(member?.phone_no)}`, left);
-        doc.moveDown(0.8);
-      }
-    }
-
-    function drawTableHeader() {
-      const y = doc.y;
-      doc.fontSize(9).font("Helvetica-Bold");
-
-      doc.text("Date", xDate, y, { width: colDateW });
-      doc.text("Description", xDesc, y, { width: colDescW });
-      doc.text("Amount (₦)", xAmt, y, { width: colAmtW, align: "right" });
-      doc.text("Remark", xRemark, y, { width: colRemarkW });
-
-      doc.moveDown(0.3);
-      doc.moveTo(left, doc.y).lineTo(right, doc.y).strokeColor("#999").stroke();
-      doc.moveDown(0.4);
-      doc.font("Helvetica").fillColor("black");
-    }
-
-    function drawGroupTitle(title) {
-      ensureSpace(18);
-      doc.fontSize(10).font("Helvetica-Bold").text(title, left, doc.y, { width: right - left });
-      doc.moveDown(0.2);
-      doc.font("Helvetica");
-    }
-
-    function drawSubtotal(total) {
-      ensureSpace(18);
-      doc.moveDown(0.2);
-      doc.fontSize(9).font("Helvetica-Bold");
-      doc.text("Subtotal:", xAmt, doc.y, { width: colAmtW, align: "right" });
-      doc.text(money(total), xRemark, doc.y, { width: colRemarkW, align: "left" });
-      doc.font("Helvetica");
-      doc.moveDown(0.4);
-      doc.moveTo(left, doc.y).lineTo(right, doc.y).strokeColor("#ddd").stroke();
-      doc.moveDown(0.5);
-    }
-
-    function drawRow(r) {
-      const dateTxt = safeText(r.date);
-      const descTxt = safeText(r.description);
-      const amtTxt = money(r.amount);
-      const remarkTxt = toSentenceCase(safeText(r.remark));
-
-      doc.fontSize(8).font("Helvetica");
-
-      // Calculate row height based on remark wrapping
-      const remarkH = doc.heightOfString(remarkTxt, {
-        width: colRemarkW,
-        align: "left"
-      });
-
-      const descH = doc.heightOfString(descTxt, { width: colDescW });
-      const dateH = doc.heightOfString(dateTxt, { width: colDateW });
-      const baseH = Math.max(remarkH, descH, dateH);
-
-      const rowH = baseH + 6; // padding
-
-      ensureSpace(rowH + 6);
-
-      const y = doc.y;
-
-      doc.text(dateTxt, xDate, y, { width: colDateW });
-      doc.text(descTxt, xDesc, y, { width: colDescW });
-      doc.text(amtTxt, xAmt, y, { width: colAmtW, align: "right" });
-      doc.text(remarkTxt, xRemark, y, { width: colRemarkW, align: "left" });
-
-      // advance y by computed height (prevents overlap + prevents random blank pages)
-      doc.y = y + rowH;
-
-      // light row line
-      doc.moveTo(left, doc.y).lineTo(right, doc.y).strokeColor("#eee").stroke();
-      doc.moveDown(0.2);
-    }
-
-    // Start document
-    drawHeader(true);
-    drawTableHeader();
-
-    // Group by description + subtotal
-    let currentDesc = null;
-    let subtotal = 0;
-
-    for (const r of rows) {
-      const desc = safeText(r.description);
-
-      if (currentDesc === null) {
-        currentDesc = desc;
-        drawGroupTitle(currentDesc);
-      } else if (desc.toLowerCase() !== currentDesc.toLowerCase()) {
-        // close previous group
-        drawSubtotal(subtotal);
-        subtotal = 0;
-        currentDesc = desc;
-        drawGroupTitle(currentDesc);
-      }
-
-      subtotal += Number(r.amount || 0);
-      drawRow(r);
-    }
-
-    if (currentDesc !== null) {
-      drawSubtotal(subtotal);
-    }
-
-    // Footer
-    ensureSpace(30);
-    doc.moveDown(0.8);
-    doc.fontSize(8).fillColor("#666").text(`© ${new Date().getFullYear()} NBSC Kaduna`, left, doc.y, {
-      width: right - left,
-      align: "center"
+    // ----- Header
+    doc.font("Helvetica-Bold").fontSize(13).text("NIGERIAN BREWERIES STAFF COOPERATIVE – KADUNA", {
+      align: "center",
     });
+    doc.moveDown(0.4);
+    doc.font("Helvetica-Bold").fontSize(11).text("Member Statement", { align: "center" });
+    doc.moveDown(0.8);
+
+    doc.font("Helvetica").fontSize(9);
+    doc.text(`Name: ${safeText(member?.full_name)}`);
+    doc.text(`SAP No: ${sap_no}`);
+    doc.text(`Phone: ${safeText(member?.phone_no)}`);
+    doc.moveDown(0.6);
+
+    // ----- Table layout
+    const x = doc.page.margins.left;
+    const topY = doc.y;
+
+    const cols = {
+      list: [
+        { label: "Date", w: 70, align: "left" },
+        { label: "Description", w: 190, align: "left" },
+        { label: "Amount (₦)", w: 90, align: "right" },
+        { label: "Remark", w: 160, align: "left" },
+      ],
+      get totalW() {
+        return this.list.reduce((s, c) => s + c.w, 0);
+      },
+    };
+
+    const headerH = 22;
+    let y = topY;
+
+    // Draw header once
+    drawTableHeader(doc, x, y, cols, headerH);
+    y += headerH;
+
+    // Helper to compute row height based on wrapped text
+    function rowHeightFor(row) {
+      const padding = 10;
+      const hDate = doc.heightOfString(row.date, { width: cols.list[0].w - 8 });
+      const hDesc = doc.heightOfString(row.description, { width: cols.list[1].w - 8 });
+      const hAmt = doc.heightOfString(naira(row.amount), { width: cols.list[2].w - 8 });
+      const hRem = doc.heightOfString(row.remark, { width: cols.list[3].w - 8 });
+      const max = Math.max(hDate, hDesc, hAmt, hRem);
+      return Math.max(18, max + padding);
+    }
+
+    function drawRow(row, isSubtotal = false) {
+      const h = rowHeightFor(row);
+      y = ensureSpace(doc, y, h, topY, cols, headerH);
+
+      // Background for subtotal
+      if (isSubtotal) {
+        doc.save();
+        doc.rect(x, y, cols.totalW, h).fill("#F1F5F9"); // light slate
+        doc.restore();
+      }
+
+      doc.rect(x, y, cols.totalW, h).stroke();
+
+      let cx = x;
+
+      // Date
+      doc.rect(cx, y, cols.list[0].w, h).stroke();
+      doc.font(isSubtotal ? "Helvetica-Bold" : "Helvetica")
+        .text(row.date, cx + 4, y + 6, { width: cols.list[0].w - 8 });
+      cx += cols.list[0].w;
+
+      // Description
+      doc.rect(cx, y, cols.list[1].w, h).stroke();
+      doc.font(isSubtotal ? "Helvetica-Bold" : "Helvetica")
+        .text(row.description, cx + 4, y + 6, { width: cols.list[1].w - 8 });
+      cx += cols.list[1].w;
+
+      // Amount
+      doc.rect(cx, y, cols.list[2].w, h).stroke();
+      doc.font(isSubtotal ? "Helvetica-Bold" : "Helvetica")
+        .text(row.amountText || naira(row.amount), cx + 4, y + 6, {
+          width: cols.list[2].w - 8,
+          align: "right",
+        });
+      cx += cols.list[2].w;
+
+      // Remark (WRAPPED — stops overlap)
+      doc.rect(cx, y, cols.list[3].w, h).stroke();
+      doc.font(isSubtotal ? "Helvetica-Bold" : "Helvetica")
+        .text(row.remark, cx + 4, y + 6, {
+          width: cols.list[3].w - 8,
+          align: "left",
+        });
+
+      y += h;
+    }
+
+    // 4) Print groups + subtotal per description
+    for (const g of groups) {
+      // Group rows
+      for (const it of g.items) drawRow(it);
+
+      // Subtotal row under that description
+      drawRow(
+        {
+          date: "",
+          description: `Subtotal: ${g.description}`,
+          amount: 0,
+          amountText: naira(g.total),
+          remark: "",
+        },
+        true
+      );
+    }
+
+    doc.moveDown(1.5);
+    doc.font("Helvetica").fontSize(8).fillColor("#64748B").text(
+      `Generated: ${new Date().toLocaleString("en-NG")}`,
+      { align: "right" }
+    );
 
     doc.end();
   } catch (e) {
     next(e);
   } finally {
-    try { db?.close?.(); } catch {}
+    db.close();
   }
 });
