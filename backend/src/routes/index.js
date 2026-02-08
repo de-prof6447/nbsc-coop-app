@@ -14,8 +14,8 @@ apiRouter.use("/members", memberRouter);
 apiRouter.use("/records", recordsRouter);
 apiRouter.use("/admin", adminRouter);
 
-// keep old endpoints
+// existing endpoints (plural)
 apiRouter.use("/statements", statementsRouter);
 
-// new PDF endpoint: GET /api/statement/pdf
+// new pdf endpoint (singular)
 apiRouter.use("/statement", statementRouter);
