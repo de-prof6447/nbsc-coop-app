@@ -6,6 +6,9 @@ import { recordsRouter } from "./records.js";
 import { adminRouter } from "./admin.js";
 import { statementsRouter } from "./statements.js";
 import { statementRouter } from "./statement.js";
+import { apiRouter } from "./routes/index.js";
+
+app.use("/api", apiRouter);
 
 export const apiRouter = Router();
 
