@@ -13,6 +13,21 @@ export default function Shell({ user, onLogout }) {
             <div className="font-bold text-blue-800 text-sm sm:text-base">NIGERIAN BREWERIES STAFF COOPERATIVE – KADUNA</div>
             <div className="text-slate-500 text-xs">Secure Member Portal</div>
           </div>
+
+          <div className="actions">
+  <a
+    href="https://nbstaffcooperative.com/"
+    target="_blank"
+    rel="noreferrer"
+    className="official-link"
+  >
+    Official Website
+  </a>
+
+  <button>Change Password</button>
+  <button>Logout</button>
+</div>
+
           <div className="ml-auto flex items-center gap-2">
             <Link
               to="/change-password"
