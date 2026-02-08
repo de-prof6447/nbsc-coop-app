@@ -18,32 +18,11 @@ if (!process.env.JWT_SECRET) {
 }
 
 const app = express();
-app.set("trust proxy", 1); // important on Render (proxy)
+app.set("trust proxy", 1); // IMPORTANT on Render
 
 const PORT = process.env.PORT || 4000;
 
-/**
- * CORS
- * - Allow multiple origins using comma-separated env var:
- *   CORS_ORIGIN="https://nbsc-coop-app.onrender.com,http://localhost:5173"
- */
-const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
-
-const corsOptions = {
-  origin: (origin, cb) => {
-    // allow non-browser tools (no Origin header)
-    if (!origin) return cb(null, true);
-    if (allowedOrigins.includes(origin)) return cb(null, true);
-    return cb(new Error(`CORS blocked for origin: ${origin}`));
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  optionsSuccessStatus: 204,
-};
+const corsOrigin = process.env.CORS_ORIGIN || "http://localhost:5173";
 
 app.use(helmet());
 app.use(morgan("dev"));
@@ -51,10 +30,23 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// ✅ Must be BEFORE routes
-app.use(cors(corsOptions));
-// ✅ Explicitly handle preflight for all routes
-app.options("*", cors(corsOptions));
+// CORS must be BEFORE routes
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      // allow same-origin or server-to-server calls with no Origin header
+      if (!origin) return cb(null, true);
+      if (origin === corsOrigin) return cb(null, true);
+      return cb(new Error(`CORS blocked for origin: ${origin}`), false);
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
+// Ensure preflight always responds
+app.options("*", cors());
 
 app.use(
   rateLimit({
@@ -67,17 +59,24 @@ app.use(
 
 // Health check
 app.get("/health", (req, res) => res.json({ ok: true }));
-app.get("/api/health", (req, res) => res.json({ status: "OK", service: "NBSC Backend", time: new Date() }));
 
-// API routes
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const frontendDist = path.join(__dirname, "../../frontend/dist");
+const templatesDir = path.join(__dirname, "../../frontend/public/templates");
+
+app.use(express.static(frontendDist));
+app.use("/templates", express.static(templatesDir));
+
 app.use("/api", apiRouter);
 
-// Root (for quick check)
-app.get("/", (req, res) => {
-  res.send("NBSC Backend API is working 🚀");
+app.get(/^\/(?!api\/).*/, (req, res, next) => {
+  const indexPath = path.join(frontendDist, "index.html");
+  res.sendFile(indexPath, (err) => {
+    if (err) return next();
+  });
 });
 
-// Errors LAST
 app.use(notFound);
 app.use(errorHandler);
 
