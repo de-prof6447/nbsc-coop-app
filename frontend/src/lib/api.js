@@ -1,37 +1,34 @@
-const rawBase = import.meta.env.VITE_API_BASE || "/api";
+const RAW_BASE = import.meta.env.VITE_API_BASE || "/api";
 
-// normalize: remove trailing slash
-const API_BASE = rawBase.replace(/\/+$/, "");
-
-function buildUrl(path) {
-  // path should start with /
-  const p = path.startsWith("/") ? path : `/${path}`;
-  return `${API_BASE}${p}`;
+function joinUrl(base, p) {
+  const b = String(base || "").replace(/\/+$/, "");
+  const path = String(p || "").startsWith("/") ? p : `/${p}`;
+  return `${b}${path}`;
 }
 
 async function request(path, opts = {}) {
-  let res;
-  try {
-    res = await fetch(buildUrl(path), {
-      ...opts,
-      headers: {
-        ...(opts.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-        ...(opts.headers || {}),
-      },
-      credentials: "include",
-    });
-  } catch (e) {
-    throw new Error("Network error (Failed to fetch). Check CORS/cookies and backend URL.");
-  }
+  const url = joinUrl(RAW_BASE, path);
+
+  const res = await fetch(url, {
+    ...opts,
+    headers: {
+      ...(opts.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      ...(opts.headers || {}),
+    },
+    credentials: "include",
+  });
 
   const contentType = res.headers.get("content-type") || "";
+
   if (!res.ok) {
     let msg = `Request failed (${res.status})`;
     try {
-      const data = contentType.includes("application/json")
-        ? await res.json()
-        : { error: await res.text() };
-      msg = data.error || msg;
+      if (contentType.includes("application/json")) {
+        const data = await res.json();
+        msg = data?.error || msg;
+      } else {
+        msg = await res.text();
+      }
     } catch {}
     throw new Error(msg);
   }
@@ -41,9 +38,11 @@ async function request(path, opts = {}) {
 }
 
 function uploadWithProgress(path, file, onProgress) {
+  const url = joinUrl(RAW_BASE, path);
+
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", buildUrl(path));
+    xhr.open("POST", url);
     xhr.withCredentials = true;
 
     xhr.upload.onprogress = (e) => {
@@ -53,9 +52,10 @@ function uploadWithProgress(path, file, onProgress) {
 
     xhr.onload = () => {
       try {
-        const contentType = xhr.getResponseHeader("content-type") || "";
-        const isJson = contentType.includes("application/json");
+        const ct = xhr.getResponseHeader("content-type") || "";
+        const isJson = ct.includes("application/json");
         const data = isJson ? JSON.parse(xhr.responseText || "{}") : xhr.responseText;
+
         if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
         return reject(new Error((data && data.error) || `Upload failed (${xhr.status})`));
       } catch {
@@ -63,7 +63,7 @@ function uploadWithProgress(path, file, onProgress) {
       }
     };
 
-    xhr.onerror = () => reject(new Error("Network error (XHR failed)"));
+    xhr.onerror = () => reject(new Error("Network error"));
 
     const fd = new FormData();
     fd.append("file", file);
@@ -74,8 +74,12 @@ function uploadWithProgress(path, file, onProgress) {
 export const api = {
   login: (sap_no, password) =>
     request("/auth/login", { method: "POST", body: JSON.stringify({ sap_no, password }) }),
-  logout: () => request("/auth/logout", { method: "POST", body: JSON.stringify({}) }),
+
+  logout: () =>
+    request("/auth/logout", { method: "POST", body: JSON.stringify({}) }),
+
   me: () => request("/auth/me"),
+
   changePassword: (current_password, new_password) =>
     request("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password, new_password }) }),
 
@@ -86,13 +90,8 @@ export const api = {
 
   listMembers: (q) => request(`/members${q ? `?q=${encodeURIComponent(q)}` : ""}`),
   createMember: (payload) => request("/members", { method: "POST", body: JSON.stringify(payload) }),
-  updateMember: (sap_no, payload) =>
-    request(`/members/${encodeURIComponent(sap_no)}`, { method: "PUT", body: JSON.stringify(payload) }),
-  resetMemberPassword: (sap_no, new_password) =>
-    request(`/members/${encodeURIComponent(sap_no)}/reset-password`, {
-      method: "POST",
-      body: JSON.stringify({ new_password }),
-    }),
+  updateMember: (sap_no, payload) => request(`/members/${encodeURIComponent(sap_no)}`, { method: "PUT", body: JSON.stringify(payload) }),
+  resetMemberPassword: (sap_no, new_password) => request(`/members/${encodeURIComponent(sap_no)}/reset-password`, { method: "POST", body: JSON.stringify({ new_password }) }),
   deleteMember: (sap_no) => request(`/members/${encodeURIComponent(sap_no)}`, { method: "DELETE" }),
   bulkDelete: (sap_nos) => request("/members/bulk-delete", { method: "POST", body: JSON.stringify({ sap_nos }) }),
 
@@ -114,11 +113,6 @@ export const api = {
   importMembers: (file, onProgress) => uploadWithProgress("/admin/import/members", file, onProgress),
   importRecords: (file, onProgress) => uploadWithProgress("/admin/import/records", file, onProgress),
 
-  clearDatabase: () =>
-    request("/admin/danger/clear-database", { method: "POST", body: JSON.stringify({ confirm: "CLEAR" }) }),
-  deleteMembers: () =>
-    request("/admin/danger/delete-members", {
-      method: "POST",
-      body: JSON.stringify({ confirm: "DELETE_ALL_MEMBERS" }),
-    }),
+  clearDatabase: () => request("/admin/danger/clear-database", { method: "POST", body: JSON.stringify({ confirm: "CLEAR" }) }),
+  deleteMembers: () => request("/admin/danger/delete-members", { method: "POST", body: JSON.stringify({ confirm: "DELETE_ALL_MEMBERS" }) }),
 };
