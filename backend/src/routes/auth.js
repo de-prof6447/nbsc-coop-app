@@ -7,32 +7,23 @@ import { requireAuth } from "../middleware/auth.js";
 
 const COOKIE_NAME = process.env.COOKIE_NAME || "nbsc_token";
 
-/**
- * Cookie options for cross-site (frontend + backend on different domains).
- * Production on Render MUST be:
- * - sameSite: "none"
- * - secure: true
- */
-function cookieOptions() {
+function cookieOptions(req) {
   const isProd = process.env.NODE_ENV === "production";
 
-  // Allow overriding if you ever need it (optional)
-  const sameSite = (process.env.COOKIE_SAMESITE || (isProd ? "none" : "lax")).toLowerCase();
+  // If frontend + backend are different domains, you MUST use SameSite=None
+  const sameSite =
+    (process.env.COOKIE_SAMESITE || (isProd ? "none" : "lax")).toLowerCase();
 
-  // Secure MUST be true when SameSite=None (browser requirement)
+  // Secure must be true for SameSite=None
   const secure =
-    sameSite === "none"
-      ? true
-      : (process.env.COOKIE_SECURE ? String(process.env.COOKIE_SECURE) === "true" : isProd);
+    String(process.env.COOKIE_SECURE || (isProd ? "true" : "false")) === "true";
 
   return {
     httpOnly: true,
     secure,
-    sameSite, // "none" in production for cross-domain
+    sameSite, // "none" in production for cross-site cookie
     path: "/",
-    maxAge: 7 * 24 * 60 * 60 * 1000
-    // Do NOT set domain unless you know exactly what you're doing.
-    // Leaving it unset makes it host-only for nbsc-backend.onrender.com, which is correct.
+    maxAge: 7 * 24 * 60 * 60 * 1000,
   };
 }
 
@@ -61,15 +52,13 @@ authRouter.post("/login", async (req, res, next) => {
         { expiresIn: "7d" }
       );
 
-      // Set cookie
-      res.cookie(COOKIE_NAME, token, cookieOptions());
+      res.cookie(COOKIE_NAME, token, cookieOptions(req));
 
-      // Return user (do not return token)
-      return res.json({
+      res.json({
         sap_no: user.sap_no,
         full_name: user.full_name,
         role: user.role,
-        force_password_change: !!user.force_password_change
+        force_password_change: !!user.force_password_change,
       });
     } finally {
       db.close();
@@ -80,9 +69,8 @@ authRouter.post("/login", async (req, res, next) => {
 });
 
 authRouter.post("/logout", (req, res) => {
-  // Clear must use SAME options (especially sameSite/secure/path), otherwise cookie may not clear.
-  const opts = cookieOptions();
-  res.clearCookie(COOKIE_NAME, { path: opts.path, sameSite: opts.sameSite, secure: opts.secure });
+  // Must clear with SAME options used when setting (especially sameSite/secure)
+  res.clearCookie(COOKIE_NAME, cookieOptions(req));
   res.json({ ok: true });
 });
 
