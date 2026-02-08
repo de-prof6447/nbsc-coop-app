@@ -6,10 +6,10 @@ import { memberRouter } from "./members.js";
 import { recordsRouter } from "./records.js";
 import { adminRouter } from "./admin.js";
 
-// Existing statements routes (plural) - keep if your app already uses it
+// Existing statements routes (plural)
 import { statementsRouter } from "./statements.js";
 
-// New PDFKit statement route (singular) from my earlier message
+// New PDFKit statement routes (singular)
 import { statementRouter } from "./statement.js";
 
 export const apiRouter = Router();
@@ -22,10 +22,6 @@ apiRouter.use("/members", memberRouter);
 apiRouter.use("/records", recordsRouter);
 apiRouter.use("/admin", adminRouter);
 
-// Statements:
-// 1) Keep your old endpoints under /statements (plural)
-apiRouter.use("/statements", statementsRouter);
-
-// 2) New PDF endpoint under /statement (singular)
-//    This will serve: GET /api/statement/pdf
-apiRouter.use("/statement", statementRouter);
+// Statements
+apiRouter.use("/statements", statementsRouter); // existing endpoints
+apiRouter.use("/statement", statementRouter);   // new PDF endpoints (e.g. GET /api/statement/pdf)
