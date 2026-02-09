@@ -1,3 +1,4 @@
+// backend/src/server.js
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -22,40 +23,51 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 /**
- * IMPORTANT for Render/Proxy:
- * Needed so secure cookies work correctly behind the proxy.
+ * Render runs behind a proxy.
+ * This is required so secure cookies + req.ip work correctly.
  */
 app.set("trust proxy", 1);
 
-const corsOriginsEnv = (process.env.CORS_ORIGIN || "http://localhost:5173")
+/**
+ * CORS
+ * Set env on Render backend:
+ *   CORS_ORIGIN=https://nbsc-coop-app.onrender.com
+ * (You can add multiple origins separated by commas)
+ */
+const corsOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173")
   .split(",")
-  .map(s => s.trim())
+  .map((s) => s.trim())
   .filter(Boolean);
 
 const corsOptions = {
   origin(origin, cb) {
-    // Allow same-origin / server-to-server calls (no Origin header)
+    // allow same-origin / server-to-server requests (no Origin header)
     if (!origin) return cb(null, true);
 
-    if (corsOriginsEnv.includes(origin)) return cb(null, true);
-    return cb(new Error(`CORS blocked for origin: ${origin}`));
+    if (corsOrigins.includes(origin)) return cb(null, true);
+
+    // return false instead of throwing to avoid noisy crashes
+    return cb(null, false);
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
 };
 
+// Security + logs
 app.use(helmet());
 app.use(morgan("dev"));
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
+
+// Body sizes: increase to support uploads/large payloads
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(cookieParser());
 
-// CORS must be BEFORE routes
+// CORS must be before routes
 app.use(cors(corsOptions));
-// Ensure preflight requests succeed
 app.options("*", cors(corsOptions));
 
+// Rate limiting
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -65,15 +77,19 @@ app.use(
   })
 );
 
-// Health checks
+// Health
 app.get("/health", (req, res) => res.json({ ok: true }));
 app.get("/api/health", (req, res) => {
-  res.json({ status: "OK", service: "NBSC Backend", time: new Date() });
+  res.json({ status: "OK", service: "NBSC Backend", time: new Date().toISOString() });
 });
 
-// Serve frontend build if present
+/**
+ * Serve React build if present (optional).
+ * If you host frontend separately on Render Static Site, it's okay if dist is missing here.
+ */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const frontendDist = path.join(__dirname, "../../frontend/dist");
 const templatesDir = path.join(__dirname, "../../frontend/public/templates");
 
@@ -88,15 +104,14 @@ if (hasFrontendBuild) {
 // API routes
 app.use("/api", apiRouter);
 
-// SPA fallback (ONLY if frontend exists)
+// SPA fallback only when frontend build exists on backend service
 if (hasFrontendBuild) {
   app.get(/^\/(?!api\/).*/, (req, res) => {
     res.sendFile(indexPath);
   });
 } else {
-  // If no frontend build on backend service, show a simple message at /
   app.get("/", (req, res) => {
-    res.send("NBSC Backend API is working 🚀 (frontend build not found on this server)");
+    res.send("NBSC Backend API is working 🚀");
   });
 }
 
